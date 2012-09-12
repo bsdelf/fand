@@ -86,21 +86,28 @@ int main()
                 sysctlbyname(ctl_fanlevel, nullptr, 0, &level, sizeof(level));
             }
         } else if (max > 48) {
+            lv1times = 0;
+            lv2times = 0;
+
             if (level != 3) {
                 cout << level << " => 3" << endl;
                 level = 3;
                 sysctlbyname(ctl_fanlevel, nullptr, 0, &level, sizeof(level));
             }
-        } else if (level != 2){
+        } else {
+            lv1times = 0;
             if (level > 2) {
                 if (++lv2times < holdtimes)
                     continue;
                 else
                     lv2times = 0;
             }
-            cout << level << " => 2" << endl;
-            level = 2;
-            sysctlbyname(ctl_fanlevel, nullptr, 0, &level, sizeof(level));
+
+            if (level != 2) {
+                cout << level << " => 2" << endl;
+                level = 2;
+                sysctlbyname(ctl_fanlevel, nullptr, 0, &level, sizeof(level));
+            }
         }
     }
 
