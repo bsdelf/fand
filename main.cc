@@ -87,11 +87,11 @@ struct IHandler
         }
     }
 
-    static int HOLD_TIMES;
-    static int MORE;
+    static int STICK_TIMES;
+    static int STICK_TEMP;
 };
-int IHandler::HOLD_TIMES = 0;
-int IHandler::MORE = 0;
+int IHandler::STICK_TIMES = 0;
+int IHandler::STICK_TEMP = 0;
 
 // (min, max]
 
@@ -99,7 +99,7 @@ struct LV1Handler: public IHandler
 {
     virtual EmHandleRet Handle(int t)
     {
-        if (t > max+MORE)
+        if (t > max+STICK_TEMP)
             return EmHandleRet::Out;
 
         return TrySwitch(1) ? EmHandleRet::Ok : EmHandleRet::Err;
@@ -117,13 +117,13 @@ struct LV2Handler: public IHandler
 {
     virtual EmHandleRet Handle(int t)
     {
-        if (t > max+MORE) {
+        if (t > max+STICK_TEMP) {
             escapeTimes = 0;
             return EmHandleRet::Out;
         }
 
         if (t <= min) {
-            if (++escapeTimes >= HOLD_TIMES) {
+            if (++escapeTimes >= STICK_TIMES) {
                 escapeTimes = 0;
                 return EmHandleRet::Out;
             }
@@ -149,7 +149,7 @@ struct LV3Handler: public IHandler
     virtual EmHandleRet Handle(int t)
     {
         if (t <= min) {
-            if (++escapeTimes >= HOLD_TIMES) {
+            if (++escapeTimes >= STICK_TIMES) {
                 escapeTimes = 0;
                 return EmHandleRet::Out;
             }
@@ -175,8 +175,8 @@ int main()
     const int hold = 30*1000;   // ms
     const int tick = 500;       // ms
     const int nice = -10;
-    IHandler::MORE = 5;
-    IHandler::HOLD_TIMES = hold/tick;
+    IHandler::STICK_TEMP = 5;
+    IHandler::STICK_TIMES = hold/tick;
 
     // renice
     if (setpriority(PRIO_PROCESS, 0, nice) != 0) {
