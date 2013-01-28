@@ -300,10 +300,6 @@ int main(int argc, char** argv)
     retval = (FanAuto() & retval);
     LOG.close();
     
-    pidfile_remove(pfh);
-
-    return retval;
-
 LABEL_FAILED:
     pidfile_remove(pfh);
     return retval;
