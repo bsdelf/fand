@@ -1,4 +1,5 @@
 #include <iostream>
+#include <fstream>
 #include <string>
 #include <array>
 #include <algorithm>
@@ -7,14 +8,14 @@
 using namespace std;
 
 #include <unistd.h>
+#include <stdlib.h>
+#include <signal.h>
+#include <errno.h>
 #include <sys/types.h>
 #include <sys/sysctl.h>
 #include <sys/time.h>
 #include <sys/resource.h>
-
-const char* const ctl_thermal = "dev.acpi_ibm.0.thermal";
-const char* const ctl_fan = "dev.acpi_ibm.0.fan";
-const char* const ctl_fanlevel = "dev.acpi_ibm.0.fan_level";
+#include <libutil.h>
 
 /*
  * 1. CPU
@@ -27,6 +28,19 @@ const char* const ctl_fanlevel = "dev.acpi_ibm.0.fan_level";
  * 8. UltraBay battery
  */
 
+static const char* LOG_FILE = "/var/log/fand.log";
+static const char* PID_FILE = "/var/run/fand.pid";
+
+static const char* CTL_THERMAL = "dev.acpi_ibm.0.thermal";
+static const char* CTL_FAN = "dev.acpi_ibm.0.fan";
+static const char* CTL_FANLEVEL = "dev.acpi_ibm.0.fan_level";
+
+static fstream LOG;
+static bool QUIT = false;
+
+#define TLOG LOG << DateTime() << " "
+
+/* utils */
 static string DateTime(const char* fmt = "%Y.%m.%d %T")
 {
     // buffer size is limited to 100
@@ -40,11 +54,11 @@ static bool FetchThermal(array<int, 8>& thermal)
 {
     // verify, fetch, normalize
     size_t thermalLen = 0;
-    if (sysctlbyname(ctl_thermal, nullptr, &thermalLen, nullptr, 0) != 0)
+    if (sysctlbyname(CTL_THERMAL, nullptr, &thermalLen, nullptr, 0) != 0)
         return false;
     if (thermalLen != sizeof(thermal))
         return false;
-    if (sysctlbyname(ctl_thermal, thermal.data(), &thermalLen, nullptr, 0) != 0)
+    if (sysctlbyname(CTL_THERMAL, thermal.data(), &thermalLen, nullptr, 0) != 0)
         return false;
     replace_if(thermal.begin(), thermal.end(),
                [](int t)->bool { return t >= 255; },
@@ -52,6 +66,7 @@ static bool FetchThermal(array<int, 8>& thermal)
     return true;
 }
 
+/* level handler */
 enum class EmHandleRet
 {
     Ok,
@@ -70,18 +85,18 @@ public:
         // fetch
         int prevLevel = 0;
         size_t levelLen = sizeof(prevLevel);
-        if (sysctlbyname(ctl_fanlevel, &prevLevel, &levelLen, nullptr, 0) != 0)
+        if (sysctlbyname(CTL_FANLEVEL, &prevLevel, &levelLen, nullptr, 0) != 0)
             return false;
         if (prevLevel == level)
             return true;
 
         // update
-        cout << DateTime() << " " << prevLevel << " => " << level;
-        if (sysctlbyname(ctl_fanlevel, nullptr, 0, &level, sizeof(level)) == 0) {
-            cout << endl;
+        TLOG << prevLevel << " => " << level;
+        if (sysctlbyname(CTL_FANLEVEL, nullptr, 0, &level, sizeof(level)) == 0) {
+            LOG << endl;
             return true;
         } else {
-            cout <<  " failed!" << endl;
+            LOG <<  " failed!" << endl;
             return true;
         }
     }
@@ -125,22 +140,57 @@ private:
 int LevelHandler::STICK_TIMES = 0;
 int LevelHandler::STICK_TEMP = 0;
 
-int main()
+/* signal handler */
+static void OnSignal(int signum)
+{
+    if (signum == SIGINT || signum == SIGTERM) {
+        TLOG << "about to quit" << endl;
+        QUIT = true;
+    }
+}
+
+/* fan operations */
+static int FanManual()
+{
+    // switch to manual mode
+    int err = 0;
+    int val = 1;
+
+    err = sysctlbyname(CTL_FANLEVEL, nullptr, 0, &val, sizeof(val));
+    if (err != 0) goto LABEL_FAILED;
+
+    val = 0;
+    err = sysctlbyname(CTL_FAN, nullptr, 0, &val, sizeof(val));
+    if (err != 0) goto LABEL_FAILED;
+
+    return 0;
+
+LABEL_FAILED:
+    TLOG << "can't switch to manual mode!" << endl;
+    return -1;
+}
+
+static int FanAuto()
+{
+    // recover to automatic mode
+    int val = 1;
+    int retval = sysctlbyname(CTL_FAN, nullptr, 0, &val, sizeof(val));
+    if (retval != 0) {
+        TLOG << "can't switch to automatic mode" << endl;
+    }
+    return retval;
+}
+
+static int FanAdjust()
 {
     array<int, 8> thermal;
     const int hold = 30*1000;   // ms
     const int tick = 500;       // ms
-    const int nice = -10;
+
     LevelHandler::STICK_TEMP = 5;
     LevelHandler::STICK_TIMES = hold/tick;
 
-    // renice
-    if (setpriority(PRIO_PROCESS, 0, nice) != 0) {
-        cout << "failed to renice myself!" << endl;
-        return 1;
-    }
-
-    // prepare
+    // handlers
     LevelHandler handlers[] = {
         {   0,  -256,   30  },
         {   1,  30,     40  },
@@ -156,40 +206,26 @@ int main()
         return nullptr;
     };
 
-    // switch to manual mode
-    while (true) {
-        int err = 0;
-        int val = 1;
-
-        err = sysctlbyname(ctl_fanlevel, nullptr, 0, &val, sizeof(val));
-        if (err != 0) goto label_failed;
-
-        val = 0;
-        err = sysctlbyname(ctl_fan, nullptr, 0, &val, sizeof(val));
-        if (err != 0) goto label_failed;
-
-        break;
-
-label_failed:
-        cout << "can't switch to manual mode!" << endl;
-        return 1;
-    }
-
-    // work now
-    cout << DateTime() << " begin" << endl;
+    // loop
+    TLOG << "begin adjust" << endl;
     FetchThermal(thermal);
-    for (LevelHandler* h = FnPickHandler(thermal[0]); h != nullptr; ) {
-        if (!FetchThermal(thermal))
+    LevelHandler* inith = FnPickHandler(thermal[0]);
+    TLOG << "initial level: " << inith->level << endl;
+    for (LevelHandler* h = inith; h != nullptr; ) {
+        if (QUIT)
             break;
+        if (!FetchThermal(thermal)) {
+            TLOG << "failed to read thermal info!" << endl;
+            break;
+        }
 
         int cpu = thermal[0];
-        EmHandleRet ret = h->Handle(cpu); 
-        switch (ret) {
+        EmHandleRet retval = h->Handle(cpu); 
+        switch (retval) {
         case EmHandleRet::Out: {
-            LevelHandler* _h = FnPickHandler(cpu);
-            // avoid busy Handle()
-            if (_h != h) {
-                h = _h;
+            LevelHandler* newh = FnPickHandler(cpu);
+            if (newh != h) { // avoid busy Handle()
+                h = newh;
                 continue;
             }
         }
@@ -200,23 +236,75 @@ label_failed:
 
         case EmHandleRet::Err:
         default: {
-            h = nullptr;
-            continue;
+            return -1;
         }
             break;
         }
 
         usleep(tick*1000);
     }
-    cout << DateTime() << " end" << endl;
-
-    // recover to automatic mode(though it won't work currently)
-    {
-        int val = 1;
-        if (sysctlbyname(ctl_fan, nullptr, 0, &val, sizeof(val)) != 0)
-            return 1;
-    }
-    cout << DateTime() << " recovered" << endl;
+    TLOG << "end adjust" << endl << endl;
 
     return 0;
+}
+
+int main(int argc, char** argv)
+{
+    int retval = 0;
+    int nice = -10;
+    struct pidfh* pfh = nullptr;
+    pid_t otherpid;
+
+    if (getuid() != 0) {
+        retval = EEXIST;
+        cerr << "not super user" << endl;
+        goto LABEL_FAILED;
+    }
+
+    pfh = pidfile_open(PID_FILE, 0600, &otherpid);
+    if (pfh == nullptr) {
+        if (errno == EEXIST) {
+            cerr << getprogname() << " already running, pid " << otherpid << endl;
+            goto LABEL_FAILED;
+        }
+        cerr << "cannot open or create pidfile!" << endl;
+    }
+
+    // daemonalize
+    if (daemon(0, 0) != 0) {
+        cerr << "cannot enter daemon mode, exiting!" << endl;
+        goto LABEL_FAILED;
+    }
+
+    // renice
+    if (setpriority(PRIO_PROCESS, 0, nice) != 0) {
+        cerr << "failed to renice myself!" << endl;
+        goto LABEL_FAILED;
+    }
+
+    pidfile_write(pfh);
+
+    // signals
+    signal(SIGHUP, SIG_IGN);
+    signal(SIGINT, OnSignal);
+    signal(SIGTERM, OnSignal);
+
+    // do it
+    LOG.open(LOG_FILE, ios::out | ios::app);
+    if (!LOG.is_open()) {
+        cerr << "failed to open LOG file: " << LOG_FILE << endl;
+        goto LABEL_FAILED;
+    }
+    if ((retval = FanManual()) == 0)
+        retval = FanAdjust();
+    retval = (FanAuto() & retval);
+    LOG.close();
+    
+    pidfile_remove(pfh);
+
+    return retval;
+
+LABEL_FAILED:
+    pidfile_remove(pfh);
+    return retval;
 }
