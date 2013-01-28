@@ -270,15 +270,15 @@ int main(int argc, char** argv)
         cerr << "cannot open or create pidfile!" << endl;
     }
 
-    // daemonalize
-    if (daemon(0, 0) != 0) {
-        cerr << "cannot enter daemon mode, exiting!" << endl;
-        goto LABEL_FAILED;
-    }
-
     // renice
     if (setpriority(PRIO_PROCESS, 0, nice) != 0) {
         cerr << "failed to renice myself!" << endl;
+        goto LABEL_FAILED;
+    }
+
+    // daemonalize
+    if (daemon(0, 0) != 0) {
+        cerr << "cannot enter daemon mode, exiting!" << endl;
         goto LABEL_FAILED;
     }
 
