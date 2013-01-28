@@ -31,7 +31,7 @@ static string DateTime(const char* fmt = "%Y.%m.%d %T")
 {
     // buffer size is limited to 100
     char buf[100];
-    std::time_t t = std::time(NULL);
+    std::time_t t = std::time(nullptr);
     size_t len = std::strftime(buf, sizeof(buf), fmt, std::localtime(&t));
     return string(buf, len);
 }
@@ -59,12 +59,11 @@ enum class EmHandleRet
     Out
 };
 
-struct IHandler
+class LevelHandler
 {
-    virtual ~IHandler() { }
-
-    virtual EmHandleRet Handle(int t) = 0;
-    virtual bool InRange(int t) const = 0;
+public:
+    static int STICK_TIMES;
+    static int STICK_TEMP;
 
     static bool TrySwitch(int level)
     {
@@ -82,40 +81,22 @@ struct IHandler
             cout << endl;
             return true;
         } else {
-            cout <<  " Failed!" << endl;
+            cout <<  " failed!" << endl;
             return true;
         }
     }
 
-    static int STICK_TIMES;
-    static int STICK_TEMP;
-};
-int IHandler::STICK_TIMES = 0;
-int IHandler::STICK_TEMP = 0;
-
-// (min, max]
-
-struct LV1Handler: public IHandler
-{
-    virtual EmHandleRet Handle(int t)
-    {
-        if (t > max+STICK_TEMP)
-            return EmHandleRet::Out;
-
-        return TrySwitch(1) ? EmHandleRet::Ok : EmHandleRet::Err;
-    }
-
-    virtual bool InRange(int t) const
-    {
-        return (t <= max);
-    }
-
+public:
+    int level;
+    int min;
     int max;
-};
 
-struct LV2Handler: public IHandler
-{
-    virtual EmHandleRet Handle(int t)
+    LevelHandler(int _level, int _min, int _max):
+        level(_level), min(_min), max(_max)
+    {
+    }
+
+    EmHandleRet Handle(int t)
     {
         if (t > max+STICK_TEMP) {
             escapeTimes = 0;
@@ -129,45 +110,20 @@ struct LV2Handler: public IHandler
             }
         }
 
-        return TrySwitch(2) ? EmHandleRet::Ok : EmHandleRet::Err;
+        return TrySwitch(level) ? EmHandleRet::Ok : EmHandleRet::Err;
     }
 
-    virtual bool InRange(int t) const
+    bool InRange(int t) const
     {
         return (t > min && t <= max);
     }
 
-    int max;
-    int min;
-
 private:
     int escapeTimes = 0;
 };
 
-struct LV3Handler: public IHandler
-{
-    virtual EmHandleRet Handle(int t)
-    {
-        if (t <= min) {
-            if (++escapeTimes >= STICK_TIMES) {
-                escapeTimes = 0;
-                return EmHandleRet::Out;
-            }
-        }
-
-        return TrySwitch(3) ? EmHandleRet::Ok : EmHandleRet::Err;
-    }
-
-    virtual bool InRange(int t) const
-    {
-        return (t > min);
-    }
-
-    int min;
-
-private:
-    int escapeTimes = 0;
-};
+int LevelHandler::STICK_TIMES = 0;
+int LevelHandler::STICK_TEMP = 0;
 
 int main()
 {
@@ -175,25 +131,27 @@ int main()
     const int hold = 30*1000;   // ms
     const int tick = 500;       // ms
     const int nice = -10;
-    IHandler::STICK_TEMP = 5;
-    IHandler::STICK_TIMES = hold/tick;
+    LevelHandler::STICK_TEMP = 5;
+    LevelHandler::STICK_TIMES = hold/tick;
 
     // renice
     if (setpriority(PRIO_PROCESS, 0, nice) != 0) {
-        cout << "renice myself failed!" << endl;
+        cout << "failed to renice myself!" << endl;
         return 1;
     }
 
     // prepare
-    LV1Handler h1; h1.max = 40;
-    LV2Handler h2; h2.min = 40; h2.max = 50;
-    LV3Handler h3; h3.min = 50;
-    IHandler* const handlers[3] = { &h1, &h2, &h3 };
+    LevelHandler handlers[] = {
+        {   0,  -256,   30  },
+        {   1,  30,     40  },
+        {   2,  40,     50  },
+        {   3,  50,     255 }
+    };
 
-    auto FnPickHandler = [&handlers](int t)->IHandler* {
-        for (IHandler* h: handlers) {
-            if (h->InRange(t))
-                return h;
+    auto FnPickHandler = [&handlers](int t)->LevelHandler* {
+        for (LevelHandler& h: handlers) {
+            if (h.InRange(t))
+                return &h;
         }
         return nullptr;
     };
@@ -217,9 +175,10 @@ label_failed:
         return 1;
     }
 
-    // begin to work
+    // work now
     cout << DateTime() << " begin" << endl;
-    for (IHandler* h = FnPickHandler(10); h != nullptr; ) {
+    FetchThermal(thermal);
+    for (LevelHandler* h = FnPickHandler(thermal[0]); h != nullptr; ) {
         if (!FetchThermal(thermal))
             break;
 
@@ -227,7 +186,7 @@ label_failed:
         EmHandleRet ret = h->Handle(cpu); 
         switch (ret) {
         case EmHandleRet::Out: {
-            IHandler* _h = FnPickHandler(cpu);
+            LevelHandler* _h = FnPickHandler(cpu);
             // avoid busy Handle()
             if (_h != h) {
                 h = _h;
@@ -251,7 +210,7 @@ label_failed:
     }
     cout << DateTime() << " end" << endl;
 
-    // recover to automatic mode
+    // recover to automatic mode(though it won't work currently)
     {
         int val = 1;
         if (sysctlbyname(ctl_fan, nullptr, 0, &val, sizeof(val)) != 0)
