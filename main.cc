@@ -256,7 +256,7 @@ int main(int argc, char** argv)
     pid_t otherpid;
 
     if (getuid() != 0) {
-        retval = EEXIST;
+        retval = -1;
         cerr << "not super user" << endl;
         goto LABEL_FAILED;
     }
