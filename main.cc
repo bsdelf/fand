@@ -150,7 +150,7 @@ static void OnSignal(int signum)
 }
 
 /* fan operations */
-static int FanManual()
+static int SwitchToManual()
 {
     // switch to manual mode
     int err = 0;
@@ -170,7 +170,7 @@ LABEL_FAILED:
     return -1;
 }
 
-static int FanAuto()
+static int SwitchToAuto()
 {
     // recover to automatic mode
     int val = 1;
@@ -181,7 +181,7 @@ static int FanAuto()
     return retval;
 }
 
-static int FanAdjust()
+static int AdjustLoop()
 {
     array<int, 8> thermal;
     const int hold = 30*1000;   // ms
@@ -295,9 +295,10 @@ int main(int argc, char** argv)
         cerr << "failed to open LOG file: " << LOG_FILE << endl;
         goto LABEL_FAILED;
     }
-    if ((retval = FanManual()) == 0)
-        retval = FanAdjust();
-    retval = (FanAuto() & retval);
+    if ((retval = SwitchToManual()) == 0) {
+        retval = AdjustLoop();
+    }
+    retval = (SwitchToAuto() & retval);
     LOG.close();
     
 LABEL_FAILED:
