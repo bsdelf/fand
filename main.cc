@@ -251,7 +251,7 @@ static int FanAdjust()
 int main(int argc, char** argv)
 {
     int retval = 0;
-    int nice = -10;
+    int nice = -5;
     struct pidfh* pfh = nullptr;
     pid_t otherpid;
 
