@@ -2,11 +2,9 @@
 #include <fstream>
 #include <string>
 #include <array>
-#include <algorithm>
 #include <ctime>
 #include <locale>
 #include <limits>
-using namespace std;
 
 #include <unistd.h>
 #include <stdlib.h>
@@ -36,116 +34,39 @@ static const char* CTL_THERMAL = "dev.acpi_ibm.0.thermal";
 static const char* CTL_FAN = "dev.acpi_ibm.0.fan";
 static const char* CTL_FANLEVEL = "dev.acpi_ibm.0.fan_level";
 
-static fstream LOG;
+static std::fstream LOG;
 static bool QUIT = false;
 
 #define TLOG LOG << DateTime() << " "
 
 /* utils */
-static string DateTime(const char* fmt = "%Y.%m.%d %T")
+static std::string DateTime(const char* fmt = "%Y.%m.%d %T")
 {
     // buffer size is limited to 100
     char buf[100];
     std::time_t t = std::time(nullptr);
     size_t len = std::strftime(buf, sizeof(buf), fmt, std::localtime(&t));
-    return string(buf, len);
+    return std::string(buf, len);
 }
 
-static bool FetchThermal(array<int, 8>& thermal)
+static bool FetchThermal(std::array<int, 8>& thermal)
 {
-    // verify, fetch, normalize
-    size_t thermalLen = 0;
-    if (sysctlbyname(CTL_THERMAL, nullptr, &thermalLen, nullptr, 0) != 0)
+    // verify, fetch
+    size_t sz = 0;
+    if (sysctlbyname(CTL_THERMAL, nullptr, &sz, nullptr, 0) != 0)
         return false;
-    if (thermalLen != sizeof(thermal))
+    if (sz != sizeof(thermal))
         return false;
-    if (sysctlbyname(CTL_THERMAL, thermal.data(), &thermalLen, nullptr, 0) != 0)
+    if (sysctlbyname(CTL_THERMAL, thermal.data(), &sz, nullptr, 0) != 0)
         return false;
-    replace_if(thermal.begin(), thermal.end(),
-               [](int t)->bool { return t >= 255; },
-               -1);
     return true;
 }
-
-/* level handler */
-enum class EmHandleRet
-{
-    Ok,
-    Err,
-    Out
-};
-
-class LevelHandler
-{
-public:
-    static int STICK_TIMES;
-    static int STICK_TEMP;
-
-    static bool TrySwitch(int level)
-    {
-        // fetch
-        int prevLevel = 0;
-        size_t levelLen = sizeof(prevLevel);
-        if (sysctlbyname(CTL_FANLEVEL, &prevLevel, &levelLen, nullptr, 0) != 0)
-            return false;
-        if (prevLevel == level)
-            return true;
-
-        // update
-        TLOG << prevLevel << " => " << level;
-        if (sysctlbyname(CTL_FANLEVEL, nullptr, 0, &level, sizeof(level)) == 0) {
-            LOG << endl;
-            return true;
-        } else {
-            LOG <<  " failed!" << endl;
-            return true;
-        }
-    }
-
-public:
-    int level;
-    int min;
-    int max;
-
-    LevelHandler(int _level, int _min, int _max):
-        level(_level), min(_min), max(_max)
-    {
-    }
-
-    EmHandleRet Handle(int t)
-    {
-        if (t > max+STICK_TEMP) {
-            escapeTimes = 0;
-            return EmHandleRet::Out;
-        }
-
-        if (t <= min) {
-            if (++escapeTimes >= STICK_TIMES) {
-                escapeTimes = 0;
-                return EmHandleRet::Out;
-            }
-        }
-
-        return TrySwitch(level) ? EmHandleRet::Ok : EmHandleRet::Err;
-    }
-
-    bool InRange(int t) const
-    {
-        return (t > min && t <= max);
-    }
-
-private:
-    int escapeTimes = 0;
-};
-
-int LevelHandler::STICK_TIMES = 0;
-int LevelHandler::STICK_TEMP = 0;
 
 /* signal handler */
 static void OnSignal(int signum)
 {
     if (signum == SIGINT || signum == SIGTERM) {
-        TLOG << "about to quit" << endl;
+        TLOG << "about to quit" << std::endl;
         QUIT = true;
     }
 }
@@ -167,7 +88,7 @@ static int SwitchToManual()
     return 0;
 
 LABEL_FAILED:
-    TLOG << "can't switch to manual mode!" << endl;
+    TLOG << "can't switch to manual mode!" << std::endl;
     return -1;
 }
 
@@ -177,74 +98,105 @@ static int SwitchToAuto()
     int val = 1;
     int retval = sysctlbyname(CTL_FAN, nullptr, 0, &val, sizeof(val));
     if (retval != 0) {
-        TLOG << "can't switch to automatic mode" << endl;
+        TLOG << "can't switch to automatic mode" << std::endl;
     }
     return retval;
 }
 
+static bool SwitchToLevel(int idx)
+{
+    // fetch
+    int previdx = 0;
+    size_t sz = sizeof(previdx);
+    if (sysctlbyname(CTL_FANLEVEL, &previdx, &sz, nullptr, 0) != 0)
+        return false;
+    if (previdx == idx)
+        return true;
+
+    // update
+    TLOG << previdx << " => " << idx;
+    if (sysctlbyname(CTL_FANLEVEL, nullptr, 0, &idx, sizeof(idx)) == 0) {
+        LOG << std::endl;
+        return true;
+    } else {
+        LOG <<  " failed!" << std::endl;
+        return true;
+    }
+}
+
+/* level profile */
+struct Profile {
+    int level;
+    int min;
+    int max;
+    int delay;
+    int stick;
+
+    bool Hit(int val) const {
+        return (val > min && val <= max);
+    }
+
+    bool Hold(int val) {
+        if (val > max + stick) {
+            TLOG << val << std::endl;
+            return false;
+        }
+
+        if (val <= min && --delay < 0) {
+            return false;
+        }
+
+        return true;
+    }
+};
+
+/* main loop */
 static int AdjustLoop()
 {
-    array<int, 8> thermal;
-    const int hold = 30*1000;   // ms
-    const int tick = 500;       // ms
+    const int tick = 300;           // ms
+    const int delay = 30*1000/tick; // ms => ticks
+    const int stick = 5;            // degree
 
-    LevelHandler::STICK_TEMP = 5;
-    LevelHandler::STICK_TIMES = hold/tick;
-
-    // handlers
-    LevelHandler handlers[] = {
-        {   0,  numeric_limits<int>::min(),   30  },
-        {   1,  30,     40  },
-        {   2,  40,     50  },
-        {   3,  50,     numeric_limits<int>::max() }
-    };
-
-    auto FnPickHandler = [&handlers](int t)->LevelHandler* {
-        for (LevelHandler& h: handlers) {
-            if (h.InRange(t))
-                return &h;
+    // profiles
+    const auto PickProfile = [](int val) -> Profile {
+        Profile profiles[] = {
+            {   0, std::numeric_limits<int>::min()+stick, 30, delay, stick   },
+            {   1, 30, 40, delay, stick   },
+            {   2, 40, 50, delay, stick   },
+            {   3, 50, std::numeric_limits<int>::max()-stick, delay, stick   }
+        };
+        for (const auto& p : profiles) {
+            if (p.Hit(val)) { return p; }
         }
-        return nullptr;
+        // should not be here
+        return { -1, -1, -1, -1 };
     };
 
     // loop
-    TLOG << "begin adjust" << endl;
+    TLOG << "begin adjust" << std::endl;
+    std::array<int, 8> thermal;
     FetchThermal(thermal);
-    LevelHandler* inith = FnPickHandler(thermal[0]);
-    TLOG << "initial level: " << inith->level << endl;
-    for (LevelHandler* h = inith; h != nullptr; ) {
-        if (QUIT)
+    Profile profile = PickProfile(thermal[0]);
+    SwitchToLevel(profile.level);
+    TLOG << "initial level: " << profile.level << std::endl;
+    for (;;) {
+        if (QUIT) {
             break;
+        }
+
         if (!FetchThermal(thermal)) {
-            TLOG << "failed to read thermal info!" << endl;
+            TLOG << "failed to read thermal info!" << std::endl;
             break;
         }
 
-        int cpu = thermal[0];
-        EmHandleRet retval = h->Handle(cpu); 
-        switch (retval) {
-        case EmHandleRet::Out: {
-            LevelHandler* newh = FnPickHandler(cpu);
-            if (newh != h) { // avoid busy Handle()
-                h = newh;
-                continue;
-            }
-        }
-            break;
-
-        case EmHandleRet::Ok:
-            break;
-
-        case EmHandleRet::Err:
-        default: {
-            return -1;
-        }
-            break;
+        if (!profile.Hold(thermal[0])) {
+            profile = PickProfile(thermal[0]);
+            SwitchToLevel(profile.level);
         }
 
         usleep(tick*1000);
     }
-    TLOG << "end adjust" << endl << endl;
+    TLOG << "end adjust" << std::endl << std::endl;
 
     return 0;
 }
@@ -258,28 +210,28 @@ int main(int argc, char** argv)
 
     if (getuid() != 0) {
         retval = -1;
-        cerr << "not super user" << endl;
+        std::cerr << "not super user" << std::endl;
         goto LABEL_FAILED;
     }
 
     pfh = pidfile_open(PID_FILE, 0600, &otherpid);
     if (pfh == nullptr) {
         if (errno == EEXIST) {
-            cerr << getprogname() << " already running, pid " << otherpid << endl;
+            std::cerr << getprogname() << " already running, pid " << otherpid << std::endl;
             goto LABEL_FAILED;
         }
-        cerr << "cannot open or create pidfile!" << endl;
+        std::cerr << "cannot open or create pidfile!" << std::endl;
     }
 
     // renice
     if (setpriority(PRIO_PROCESS, 0, nice) != 0) {
-        cerr << "failed to renice myself!" << endl;
+        std::cerr << "failed to renice myself!" << std::endl;
         goto LABEL_FAILED;
     }
 
     // daemonalize
     if (daemon(0, 0) != 0) {
-        cerr << "cannot enter daemon mode, exiting!" << endl;
+        std::cerr << "cannot enter daemon mode, exiting!" << std::endl;
         goto LABEL_FAILED;
     }
 
@@ -291,9 +243,9 @@ int main(int argc, char** argv)
     signal(SIGTERM, OnSignal);
 
     // do it
-    LOG.open(LOG_FILE, ios::out | ios::app);
+    LOG.open(LOG_FILE, std::ios::out | std::ios::app);
     if (!LOG.is_open()) {
-        cerr << "failed to open LOG file: " << LOG_FILE << endl;
+        std::cerr << "failed to open LOG file: " << LOG_FILE << std::endl;
         goto LABEL_FAILED;
     }
     if ((retval = SwitchToManual()) == 0) {
