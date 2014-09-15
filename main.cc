@@ -132,6 +132,15 @@ struct Profile {
     int delay;
     int stick;
 
+    Profile(int level, int min, int max, int delay, int stick):
+        level(level),
+        min(min),
+        max(max),
+        delay(delay),
+        stick(stick),
+        __delay(delay)
+    { }
+
     bool Hit(int val) const {
         return (val > min && val <= max);
     }
@@ -141,12 +150,19 @@ struct Profile {
             return false;
         }
 
-        if (val <= min && --delay < 0) {
+        if (val <= min && --__delay < 0) {
             return false;
+        }
+
+        if (__delay != delay) {
+            __delay = delay;
         }
 
         return true;
     }
+
+private:
+    int __delay;
 };
 
 /* main loop */
@@ -157,23 +173,24 @@ static int AdjustLoop()
     const int stick = 5;            // degree
 
     // profiles
-    const auto PickProfile = [](int val) -> Profile {
-        Profile profiles[] = {
-            {   0, std::numeric_limits<int>::min()+stick, 30, delay, stick   },
-            {   1, 30, 40, delay, stick   },
-            {   2, 40, 50, delay, stick   },
-            {   3, 50, std::numeric_limits<int>::max()-stick, delay, stick   }
-        };
-        for (const auto& p : profiles) {
+    Profile profiles[] {
+        {   0, std::numeric_limits<int>::min()+stick, 30, delay, stick   },
+        {   1, 30, 40, delay, stick   },
+        {   2, 40, 50, delay, stick   },
+        {   3, 50, std::numeric_limits<int>::max()-stick, delay, stick   }
+    };
+    Profile dummy { -1, -1, -1, 0, 0 };
+
+    auto PickProfile = [&profiles, &dummy](int val) -> Profile& {
+        for (auto& p: profiles) {
             if (p.Hit(val)) { return p; }
         }
-        // should not be here
-        return { -1, -1, -1, 0, 0 };
+        return std::ref(dummy); // should not be reached
     };
 
     // loop
     TLOG << "begin adjust" << std::endl;
-    for (Profile profile { -1, -1, -1, 0, 0 };;) {
+    for (Profile& profile = dummy; ; ) {
         if (QUIT) {
             break;
         }
