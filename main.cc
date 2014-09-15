@@ -138,7 +138,6 @@ struct Profile {
 
     bool Hold(int val) {
         if (val > max + stick) {
-            TLOG << val << std::endl;
             return false;
         }
 
@@ -169,21 +168,17 @@ static int AdjustLoop()
             if (p.Hit(val)) { return p; }
         }
         // should not be here
-        return { -1, -1, -1, -1 };
+        return { -1, -1, -1, 0, 0 };
     };
 
     // loop
     TLOG << "begin adjust" << std::endl;
-    std::array<int, 8> thermal;
-    FetchThermal(thermal);
-    Profile profile = PickProfile(thermal[0]);
-    SwitchToLevel(profile.level);
-    TLOG << "initial level: " << profile.level << std::endl;
-    for (;;) {
+    for (Profile profile { -1, -1, -1, 0, 0 };;) {
         if (QUIT) {
             break;
         }
 
+        std::array<int, 8> thermal;
         if (!FetchThermal(thermal)) {
             TLOG << "failed to read thermal info!" << std::endl;
             break;
