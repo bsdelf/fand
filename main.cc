@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <ctime>
 #include <locale>
+#include <limits>
 using namespace std;
 
 #include <unistd.h>
@@ -192,10 +193,10 @@ static int AdjustLoop()
 
     // handlers
     LevelHandler handlers[] = {
-        {   0,  -256,   30  },
+        {   0,  numeric_limits<int>::min(),   30  },
         {   1,  30,     40  },
         {   2,  40,     50  },
-        {   3,  50,     255 }
+        {   3,  50,     numeric_limits<int>::max() }
     };
 
     auto FnPickHandler = [&handlers](int t)->LevelHandler* {
