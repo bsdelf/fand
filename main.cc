@@ -150,11 +150,11 @@ struct Profile {
             return false;
         }
 
-        if (val <= min && --__delay < 0) {
-            return false;
-        }
-
-        if (__delay != delay) {
+        if (val <= min) {
+            if (--__delay < 0) {
+                return false;
+            }
+        } else if (__delay != delay) {
             __delay = delay;
         }
 
